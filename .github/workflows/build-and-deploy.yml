@@ -1,8 +1,10 @@
 name: Build and deploy
 
-# Manual deploy of whatever branch you run it from into one of the dev
-# namespaces. Tagged with the short SHA, so re-running on the same commit
-# pushes over the same tag.
+# Manual deploy of whatever branch you run it from, into one of the dev
+# namespaces.
+#
+# It works out a tag, hands it to build.yml, then hands the image build.yml
+# produced to deploy.yml. Neither of those knows about the other.
 on:
   workflow_dispatch:
     inputs:
@@ -15,6 +17,10 @@ on:
           - dev2
           - dev3
         required: true
+      version:
+        description: Tag the image with this version. Leave blank to tag with the short commit SHA.
+        type: string
+        required: false
 
 concurrency:
   group: build-and-deploy-${{ inputs.environment }}
@@ -24,73 +30,48 @@ permissions:
   contents: read
 
 jobs:
-  image:
-    name: build and push
+  tag:
+    name: work out the tag
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      packages: write
     outputs:
-      image: ${{ steps.meta.outputs.image }}
+      tag: ${{ steps.pick.outputs.tag }}
     steps:
-      - uses: actions/checkout@v5
-
-      - name: Work out the image reference
-        id: meta
+      - name: Pick the tag
+        id: pick
+        env:
+          VERSION: ${{ inputs.version }}
         run: |
           set -euo pipefail
 
-          # GHCR will not take uppercase in a repository path.
-          repo="$(echo "$GITHUB_REPOSITORY" | tr '[:upper:]' '[:lower:]')"
-          tag="$(git rev-parse --short HEAD)"
+          # A version if you gave one, otherwise the commit. Dev tags are
+          # disposable, so re-running on the same commit pushes over the same
+          # tag rather than piling up new ones.
+          if [ -n "$VERSION" ]; then
+            tag="$VERSION"
+            source="version input"
+          else
+            tag="${GITHUB_SHA:0:7}"
+            source="commit SHA"
+          fi
 
-          echo "image=ghcr.io/$repo:$tag" >> "$GITHUB_OUTPUT"
-          echo "::notice title=Image::ghcr.io/$repo:$tag"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "::notice title=Tag::$tag, from the $source"
 
-      - uses: docker/setup-buildx-action@v3
-
-      - uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Build and push
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          push: true
-          tags: ${{ steps.meta.outputs.image }}
-          labels: |
-            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
-            org.opencontainers.image.revision=${{ github.sha }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-
-      - name: Summarise
-        env:
-          IMAGE: ${{ steps.meta.outputs.image }}
-          TARGET: ${{ inputs.environment }}
-        run: |
-          {
-            echo "## Built for \`$TARGET\`"
-            echo
-            echo "| | |"
-            echo "| --- | --- |"
-            echo "| Branch | \`$GITHUB_REF_NAME\` |"
-            echo "| Commit | \`$GITHUB_SHA\` |"
-            echo "| Image | \`$IMAGE\` |"
-            echo
-            echo "Dev images are not promoted. Staging and production only run"
-            echo "images built from a published release."
-          } >> "$GITHUB_STEP_SUMMARY"
+  build:
+    needs: tag
+    uses: ./.github/workflows/build.yml
+    permissions:
+      contents: read
+      packages: write
+    with:
+      tag: ${{ needs.tag.outputs.tag }}
 
   deploy:
     name: ${{ inputs.environment }}
-    needs: image
+    needs: build
     uses: ./.github/workflows/deploy.yml
     with:
       service: k8s-cicd
       environment: ${{ inputs.environment }}
-      image: ${{ needs.image.outputs.image }}
+      image: ${{ needs.build.outputs.image }}
     secrets: inherit
