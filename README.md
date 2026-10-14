@@ -1,19 +1,51 @@
-# k8s-cicd
+# k8s-cicd — multi-environment CI/CD with GitHub Actions, GHCR and Argo CD
 
-The practical demo for [From branch to production: multi-env deployment
-automation][blog].
+A working GitHub Actions pipeline that builds a container image once, deploys
+it to dev, staging and production through one reusable deploy workflow, and
+promotes the tested image to production behind a manual approval gate instead
+of rebuilding it.
 
-The post explains the design: why merging to `main` should not deploy, why
-production promotes an image instead of building one, and how one deploy job
-can serve every environment. This repo runs that design as real GitHub Actions
-workflows you can trigger and watch.
+[![CI](https://github.com/sk-platform/k8s-cicd/actions/workflows/ci.yml/badge.svg)](https://github.com/sk-platform/k8s-cicd/actions/workflows/ci.yml)
+[![Build and deploy](https://github.com/sk-platform/k8s-cicd/actions/workflows/build-and-deploy.yml/badge.svg)](https://github.com/sk-platform/k8s-cicd/actions/workflows/build-and-deploy.yml)
+[![Latest release](https://img.shields.io/github/v/release/sk-platform/k8s-cicd?sort=semver)](https://github.com/sk-platform/k8s-cicd/releases)
+
+This is the practical demo for [From branch to production: multi-env
+deployment automation][blog]. The post explains the design: why merging to
+`main` should not deploy, why production promotes an image instead of building
+one, and how one deploy job can serve every environment. This repo runs that
+design as real GitHub Actions workflows you can trigger and watch.
 
 There is a small Next.js app in here, but only so the pipelines have something
 to build and ship. The app is not the point.
 
 [blog]: https://sk-santhosh.info/blogs/from-branch-to-production-multi-env-deployment-automation
 
-## The flow
+## What this repo shows
+
+- **Build once, deploy many.** One `build.yml` is the only place an image is
+  built, so a release and a dev deploy produce their images identically.
+- **Merging to `main` deploys nothing.** It updates a draft release. Publishing
+  that draft is a person deciding to ship, and that is what cuts the tag.
+- **Promote, don't rebuild.** Production ships the exact image staging ran,
+  passed to `deploy.yml` as a tag reference.
+- **Reusable workflows.** `build.yml` and `deploy.yml` are `workflow_call`
+  workflows with `workflow_dispatch` on top, so each is callable from a
+  pipeline or runnable by hand.
+- **One deploy path for every environment.** `dev0`–`dev3`, `staging` and
+  `production` all go through the same job.
+- **Manual approval before production.** GitHub Environments with a required
+  reviewer hold the production rollout until someone approves it.
+- **Self-hosted runner pool routing.** The deploy resolves a `nonprod` or
+  `prod` pool, so only prod-labelled runners can reach the production control
+  plane.
+- **Semantic versioning from PR labels.** `release-drafter` works out the next
+  `vX.Y.Z` from the labels on merged pull requests.
+- **Container images in GHCR.** Pushed with the built-in `GITHUB_TOKEN`, no
+  registry credentials to set up.
+- **Checks on every push.** Lint, typecheck, test, build and a CodeQL scan,
+  plus a merge preview that tests the PR merged with its current base.
+
+## The deployment flow, trigger by trigger
 
 ```
 push any branch        ──►  ci.yml                 lint, typecheck, test, build, codeql
@@ -24,7 +56,7 @@ pick a dev namespace   ──►  build-and-deploy.yml   sha ──► build.yml
 promote, by hand       ──►  deploy.yml             that same image ──► production, behind approval
 ```
 
-Two things in that picture matter more than the rest.
+Two things in that picture are worth saying twice.
 
 **Merging to `main` deploys nothing.** It only keeps a draft release in step
 with what has landed. Publishing the draft is a person deciding to ship, and
@@ -34,7 +66,7 @@ that is the event which creates the tag.
 image from the release tag, staging runs it, and promoting to production hands
 `deploy.yml` that same tag. The bytes that ship are the bytes that were tested.
 
-## Workflows
+## The workflows: one build, one deploy, one caller
 
 | File | Runs on | Does |
 | --- | --- | --- |
@@ -80,7 +112,7 @@ gh workflow run deploy.yml \
 
 Every release run prints that command, filled in, in its job summary.
 
-## Triggers and environments
+## Environments and the production approval gate
 
 | Trigger | Target | How |
 | --- | --- | --- |
@@ -98,7 +130,7 @@ and `prod` pools are separate so only prod-labelled runners can reach the
 production control plane. `deploy.yml` works that routing out and logs it, then
 runs on `ubuntu-latest`, because there is no VPC behind a demo.
 
-## Images
+## Container images in GHCR
 
 Everything goes to `ghcr.io/sk-platform/k8s-cicd`. The package appears on the
 first push and starts out private.
@@ -113,7 +145,7 @@ Dev tags are disposable, because dev images are rebuilt constantly and are
 never promoted. Release tags are permanent and match the git tag, which is what
 makes a promotion to production a tag reference rather than a rebuild.
 
-## Versions
+## Automatic semantic versioning with release-drafter
 
 `release-drafter` works out the next version from the labels on the PRs merged
 since the last release.
@@ -130,7 +162,7 @@ release-drafter has no setting for the starting version, so the first release
 has to be created by hand as `v1.0.0`. After that it bumps from the last
 release.
 
-## Reading the runs
+## Workflow annotations and job summaries
 
 Each workflow annotates itself instead of leaving you to scroll a raw log:
 
@@ -158,7 +190,7 @@ Swapped out: the blog builds to ECR on AWS and syncs a private Argo CD inside a
 VPC. This uses GHCR and `GITHUB_TOKEN`, so the repo stands alone with no cloud
 account to set up.
 
-## Trying it
+## Trying it end to end
 
 ```bash
 git switch -c try/something
@@ -186,7 +218,7 @@ Or build a tag without deploying it anywhere:
 gh workflow run build.yml -f tag=v1.0.0 -f ref=v1.0.0
 ```
 
-## The app, briefly
+## The app (an India in-hand salary calculator), briefly
 
 A salary calculator: slide an annual CTC and it shows PF, professional tax,
 income tax and what lands in hand. It exists to give the pipelines a real build
@@ -202,3 +234,63 @@ docker build -t k8s-cicd . && docker run --rm -p 3000:3000 k8s-cicd
 `.githooks/pre-commit` runs the same checks before a commit and blocks it on
 failure. `npm install` wires it up through the `prepare` script. Skip it with
 `git commit --no-verify`.
+
+## FAQ
+
+**How do I deploy to multiple environments with one GitHub Actions workflow?**
+Make the rollout a `workflow_call` workflow that takes the environment as an
+input, and set `environment: ${{ inputs.environment }}` on the job. That is all
+of `deploy.yml`: one code path for `dev0`–`dev3`, `staging` and `production`,
+instead of a workflow per environment.
+
+**How do I stop a merge to `main` from deploying?**
+Do not put `push: branches: [main]` on the deploy. Here, merging to `main` only
+runs `release-drafter.yml`, which updates a draft release. The deploy triggers
+on `release: types: [published]`, so shipping is a deliberate act.
+
+**How do I promote the same image to production without rebuilding it?**
+Keep the build and the deploy in separate workflows, have the build return the
+full image reference as a `workflow_call` output, and have production dispatch
+the deploy with that reference. `deploy.yml` has no build step at all, so a
+production rollout cannot accidentally produce new bytes.
+
+**How do I require manual approval before a production deploy in GitHub Actions?**
+Add a required reviewer to the `production` GitHub Environment under Settings,
+Environments. Any job with `environment: production` then waits for that
+approval before its first step runs. Without the reviewer configured, the job
+ships straight through.
+
+**How do I version releases automatically from pull request labels?**
+`release-drafter` with a `version-resolver`. Here `feature` bumps the minor,
+`fix` and `chore` bump the patch, and anything unlabelled is a patch. The
+labels have to exist in the repo or every bump resolves to a patch, and the
+first release has to be created by hand as `v1.0.0`.
+
+**How do I route a deploy to a self-hosted runner pool per environment?**
+Resolve the pool in a step and use it in `runs-on`. `deploy.yml` works out
+`prod` for production and `nonprod` for everything else, which is how a real
+platform keeps the production control plane reachable only from prod-labelled
+runners inside the VPC.
+
+**Do I need Kubernetes or Argo CD to run this?**
+No. The `argocd login`, `set`, `sync` and `wait` calls are printed with the
+arguments they would have used, because there is no cluster behind a demo repo.
+Everything else — the triggers, the versioning, the image build and push to
+GHCR, the environment gate, the runner routing — actually runs.
+
+**Can I use this with ECR, or with Docker Hub, instead of GHCR?**
+Yes. `build.yml` is the only place that logs in and pushes, so swapping the
+registry is a change to one job. The blog version of this pipeline builds to
+ECR on AWS; this repo uses GHCR so it stands alone with no cloud account.
+
+## Related
+
+GitHub Actions multi-environment deployment · build once deploy many ·
+reusable workflows (`workflow_call`) · promote a container image to production
+· GitHub Environments approval gate · release-drafter semantic versioning ·
+GHCR image publishing · Argo CD sync from CI · self-hosted runner pools ·
+Kubernetes CI/CD pipeline example.
+
+## License
+
+[MIT](LICENSE). Copy any of it into your own pipeline.
