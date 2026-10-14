@@ -2,6 +2,35 @@
   "name": "k8s-cicd",
   "version": "0.1.0",
   "private": true,
+  "description": "Multi-environment CI/CD with GitHub Actions: build a container image once, deploy it to dev, staging and production through one reusable workflow, and promote the tested image to production behind an approval gate.",
+  "keywords": [
+    "github-actions",
+    "cicd",
+    "ci-cd-pipeline",
+    "multi-environment-deployment",
+    "reusable-workflows",
+    "workflow-call",
+    "deployment-automation",
+    "release-drafter",
+    "semantic-versioning",
+    "ghcr",
+    "container-registry",
+    "docker",
+    "kubernetes",
+    "argocd",
+    "gitops",
+    "devops",
+    "platform-engineering",
+    "nextjs"
+  ],
+  "homepage": "https://sk-santhosh.info/blogs/from-branch-to-production-multi-env-deployment-automation",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/sk-platform/k8s-cicd.git"
+  },
+  "bugs": "https://github.com/sk-platform/k8s-cicd/issues",
+  "license": "MIT",
+  "author": "Santhosh J",
   "type": "module",
   "engines": {
     "node": ">=24"
