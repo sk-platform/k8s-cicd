@@ -19,9 +19,9 @@ to build and ship. The app is not the point.
 push any branch        ──►  ci.yml                 lint, typecheck, test, build, codeql
 open a pull request    ──►  merge-preview.yml      verify the PR merged with the current base
 merge to main          ──►  release-drafter.yml    draft release bumped, nothing deployed
-publish the draft      ──►  release-deploy.yml     build vX.Y.Z image ──► deploy.yml (staging)
+publish the draft      ──►  release-deploy.yml     build.yml (vX.Y.Z) ──► deploy.yml (staging)
 promote, by hand       ──►  deploy.yml             that same image ──► production, behind approval
-pick a dev namespace   ──►  build-and-deploy.yml   build this branch ──► deploy.yml (dev0..dev3)
+pick a dev namespace   ──►  build-and-deploy.yml   tag ──► build.yml ──► deploy.yml (dev0..dev3)
 ```
 
 Two things in that picture matter more than the rest.
@@ -41,17 +41,27 @@ image from the release tag, staging runs it, and promoting to production hands
 | `ci.yml` | push to any branch | lint, typecheck, test, build, CodeQL |
 | `merge-preview.yml` | pull request | verifies the PR merged with the current base |
 | `release-drafter.yml` | push to `main` | updates the draft release |
-| `release-deploy.yml` | release published | builds and pushes the image, deploys to staging |
-| `build-and-deploy.yml` | manual | builds the current branch into a dev namespace |
+| `release-deploy.yml` | release published | calls `build.yml`, then deploys to staging |
+| `build-and-deploy.yml` | manual | picks a tag, then calls `build.yml` and `deploy.yml` |
+| `build.yml` | called, or manual | builds and pushes the image for a given tag |
 | `deploy.yml` | called, or manual | the rollout itself, for every environment |
 
-`deploy.yml` is the only place a rollout happens. Everything else builds an
-image and then calls it. That is deliberate: one code path to read and change,
-rather than one per environment that quietly drifts apart.
+The last two are the only places an image gets built or a rollout happens, and
+everything else is a caller. That split is the point: one build path and one
+deploy path to read and change, instead of a copy per trigger that quietly
+drifts.
 
-It works out the Argo CD app name (`{service}-{environment}`), works out which
-runner pool the environment needs, runs inside the matching GitHub Environment
-so approvals apply, and takes an image reference as an input. It never builds.
+`build.yml` takes a tag and pushes `ghcr.io/<repo>:<tag>`. It does not care
+where the tag came from, so a release and a dev deploy produce their images
+identically. It hands the full image reference back as an output.
+
+`deploy.yml` takes an image reference and never builds. It works out the Argo
+CD app name (`{service}-{environment}`), works out which runner pool the
+environment needs, and runs inside the matching GitHub Environment so
+approvals apply.
+
+`build-and-deploy.yml` is what decides a tag. Give it a version and it uses
+that; leave the version blank and it uses the short commit SHA.
 
 ```bash
 # promote to production, no rebuild
@@ -86,9 +96,10 @@ runs on `ubuntu-latest`, because there is no VPC behind a demo.
 Everything goes to `ghcr.io/sk-platform/k8s-cicd`. The package appears on the
 first push and starts out private.
 
-| Built by | Tag |
+| Triggered by | Tag |
 | --- | --- |
-| `build-and-deploy.yml` | the short commit SHA |
+| `build-and-deploy.yml`, no version given | the short commit SHA |
+| `build-and-deploy.yml`, version given | that version |
 | a published release | the release tag, plus `latest` |
 
 Dev tags are disposable, because dev images are rebuilt constantly and are
@@ -159,6 +170,13 @@ A dev deploy needs no release at all:
 
 ```bash
 gh workflow run build-and-deploy.yml -f environment=dev1
+gh workflow run build-and-deploy.yml -f environment=dev1 -f version=v1.2.0-rc1
+```
+
+Or build a tag without deploying it anywhere:
+
+```bash
+gh workflow run build.yml -f tag=v1.0.0 -f ref=v1.0.0
 ```
 
 ## The app, briefly
