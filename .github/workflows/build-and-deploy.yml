@@ -1,11 +1,17 @@
 name: Build and deploy
 
-# Manual deploy of whatever branch you run it from, into one of the dev
-# namespaces.
+# Tag, build, deploy. Both ways in go through here, because they want the same
+# three steps and only disagree about what the tag is and where it lands.
 #
-# It works out a tag, hands it to build.yml, then hands the image build.yml
-# produced to deploy.yml. Neither of those knows about the other.
+#   release published   the release tag, built from that tag, onto staging
+#   manual dispatch     a version or the commit SHA, onto a dev namespace
+#
+# Production is deliberately not here. It promotes an image this workflow
+# already built and staging already ran, so it dispatches deploy.yml directly
+# with no build at all.
 on:
+  release:
+    types: [published]
   workflow_dispatch:
     inputs:
       environment:
@@ -23,55 +29,117 @@ on:
         required: false
 
 concurrency:
-  group: build-and-deploy-${{ inputs.environment }}
-  cancel-in-progress: true
+  group: build-and-deploy-${{ github.event.release.tag_name || inputs.environment }}
+  # Dev deploys supersede each other. A release going out does not.
+  cancel-in-progress: ${{ github.event_name == 'workflow_dispatch' }}
 
 permissions:
   contents: read
 
 jobs:
-  tag:
-    name: work out the tag
+  plan:
+    name: work out what to ship
     runs-on: ubuntu-latest
     outputs:
-      tag: ${{ steps.pick.outputs.tag }}
+      tag: ${{ steps.plan.outputs.tag }}
+      ref: ${{ steps.plan.outputs.ref }}
+      environment: ${{ steps.plan.outputs.environment }}
+      latest: ${{ steps.plan.outputs.latest }}
     steps:
-      - name: Pick the tag
-        id: pick
+      - name: Work out the tag and the target
+        id: plan
         env:
+          EVENT: ${{ github.event_name }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
           VERSION: ${{ inputs.version }}
+          ENVIRONMENT: ${{ inputs.environment }}
         run: |
           set -euo pipefail
 
-          # A version if you gave one, otherwise the commit. Dev tags are
-          # disposable, so re-running on the same commit pushes over the same
-          # tag rather than piling up new ones.
-          if [ -n "$VERSION" ]; then
+          if [ "$EVENT" = "release" ]; then
+            tag="$RELEASE_TAG"
+            # Build the tag itself. main may have moved on since it was cut.
+            ref="$RELEASE_TAG"
+            environment="staging"
+            latest="true"
+            source="release tag"
+          elif [ -n "$VERSION" ]; then
             tag="$VERSION"
+            ref=""
+            environment="$ENVIRONMENT"
+            latest="false"
             source="version input"
           else
+            # Dev tags are disposable, so re-running on the same commit pushes
+            # over the same tag rather than piling up new ones.
             tag="${GITHUB_SHA:0:7}"
+            ref=""
+            environment="$ENVIRONMENT"
+            latest="false"
             source="commit SHA"
           fi
 
-          echo "tag=$tag" >> "$GITHUB_OUTPUT"
-          echo "::notice title=Tag::$tag, from the $source"
+          {
+            echo "tag=$tag"
+            echo "ref=$ref"
+            echo "environment=$environment"
+            echo "latest=$latest"
+          } >> "$GITHUB_OUTPUT"
+
+          echo "::notice title=Plan::$tag, from the $source, to $environment"
+
+          echo "::group::Plan"
+          echo "trigger     $EVENT"
+          echo "tag         $tag"
+          echo "build from  ${ref:-the triggering ref}"
+          echo "environment $environment"
+          echo "also latest $latest"
+          echo "::endgroup::"
 
   build:
-    needs: tag
+    needs: plan
     uses: ./.github/workflows/build.yml
     permissions:
       contents: read
       packages: write
     with:
-      tag: ${{ needs.tag.outputs.tag }}
+      tag: ${{ needs.plan.outputs.tag }}
+      ref: ${{ needs.plan.outputs.ref }}
+      latest: ${{ needs.plan.outputs.latest == 'true' }}
 
   deploy:
-    name: ${{ inputs.environment }}
-    needs: build
+    needs: [plan, build]
     uses: ./.github/workflows/deploy.yml
     with:
       service: k8s-cicd
-      environment: ${{ inputs.environment }}
+      environment: ${{ needs.plan.outputs.environment }}
       image: ${{ needs.build.outputs.image }}
     secrets: inherit
+
+  promote:
+    name: how to promote
+    if: github.event_name == 'release'
+    needs: [plan, build, deploy]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Print the promotion command
+        env:
+          IMAGE: ${{ needs.build.outputs.image }}
+          TAG: ${{ needs.plan.outputs.tag }}
+        run: |
+          set -euo pipefail
+
+          echo "::notice title=On staging::$TAG is on staging, promote it when you are ready"
+
+          {
+            echo "## \`$TAG\` is on staging"
+            echo
+            echo "Production ships this exact image, with no rebuild:"
+            echo
+            echo '```bash'
+            echo "gh workflow run deploy.yml \\"
+            echo "  -f service=k8s-cicd \\"
+            echo "  -f environment=production \\"
+            echo "  -f image=$IMAGE"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
