@@ -1,0 +1,18 @@
+#!/bin/sh
+# Blocks the commit if lint, types or tests fail.
+#
+# Enabled by `npm install`: the prepare script points git at this directory
+# with core.hooksPath. To skip it once: git commit --no-verify
+
+set -e
+
+printf '\n> lint\n'
+npm run --silent lint
+
+printf '\n> typecheck\n'
+npm run --silent typecheck
+
+printf '\n> tests\n'
+npm run --silent test
+
+printf '\nall checks passed\n'

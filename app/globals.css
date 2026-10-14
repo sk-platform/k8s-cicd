@@ -1,0 +1,111 @@
+@import "tailwindcss";
+
+/* ── Vintage ledger palette (light only) ───────────────────────── */
+@theme {
+  --color-paper: #f6efdd;
+  --color-card: #fffcf2;
+  --color-shade: #ece0c6;
+  --color-rule: #d6c6a2;
+  --color-ink: #2e1c10;
+  --color-ink-soft: #6b5340;
+  --color-burgundy: #7c2d12;
+  --color-gold: #a16207;
+  --color-olive: #3f6212;
+
+  --font-mono: var(--font-space-mono), ui-monospace, monospace;
+}
+
+html {
+  color-scheme: light;
+  -webkit-text-size-adjust: 100%;
+}
+
+body {
+  background-color: var(--color-paper);
+  /* faint ruled-paper grain */
+  background-image: repeating-linear-gradient(
+      to bottom,
+      rgba(46, 28, 16, 0.035) 0 1px,
+      transparent 1px 28px
+    ),
+    radial-gradient(120% 90% at 50% 0%, rgba(255, 252, 242, 0.9), transparent 70%);
+  color: var(--color-ink);
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ── Slider ────────────────────────────────────────────────────── */
+.dial {
+  --fill: 50%;
+  appearance: none;
+  -webkit-appearance: none;
+  width: 100%;
+  height: 44px; /* 44px touch target, 8px visible track */
+  background: transparent;
+  cursor: pointer;
+}
+.dial::-webkit-slider-runnable-track {
+  height: 10px;
+  border: 1px solid var(--color-rule);
+  border-radius: 2px;
+  background: linear-gradient(
+    to right,
+    var(--color-gold) 0 var(--fill),
+    var(--color-shade) var(--fill) 100%
+  );
+}
+.dial::-webkit-slider-thumb {
+  appearance: none;
+  -webkit-appearance: none;
+  width: 26px;
+  height: 26px;
+  margin-top: -9px;
+  border: 2px solid var(--color-burgundy);
+  border-radius: 50%;
+  background: var(--color-card);
+  box-shadow: inset 0 0 0 3px var(--color-paper), 0 1px 2px rgba(46, 28, 16, 0.3);
+}
+.dial::-moz-range-track {
+  height: 10px;
+  border: 1px solid var(--color-rule);
+  border-radius: 2px;
+  background: var(--color-shade);
+}
+.dial::-moz-range-progress {
+  height: 10px;
+  border-radius: 2px;
+  background: var(--color-gold);
+}
+.dial::-moz-range-thumb {
+  width: 24px;
+  height: 24px;
+  border: 2px solid var(--color-burgundy);
+  border-radius: 50%;
+  background: var(--color-card);
+  box-shadow: inset 0 0 0 3px var(--color-paper);
+}
+.dial:focus-visible::-webkit-slider-thumb {
+  outline: 2px solid var(--color-burgundy);
+  outline-offset: 2px;
+}
+.dial:focus-visible::-moz-range-thumb {
+  outline: 2px solid var(--color-burgundy);
+  outline-offset: 2px;
+}
+
+/* ── Dotted leader line for ledger rows ────────────────────────── */
+.leader {
+  flex: 1 1 auto;
+  min-width: 0.75rem;
+  align-self: center;
+  border-bottom: 1px dotted var(--color-rule);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    transition-duration: 0.01ms !important;
+    animation-duration: 0.01ms !important;
+  }
+}

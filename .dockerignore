@@ -1,0 +1,11 @@
+.git
+.github
+.githooks
+node_modules
+.next
+npm-debug.log*
+*.tsbuildinfo
+.env*
+.DS_Store
+README.md
+AGENTS.md

@@ -1,0 +1,148 @@
+name: Deploy
+
+# Every rollout goes through here, dev0 to production, so there is one code
+# path to read instead of one per environment.
+#
+# On the real platform this sits in a shared pipeline repo and the job runs on
+# a self-hosted runner inside the VPC, where it can reach that environment's
+# private Argo CD endpoint. There is no cluster behind this repo, so the Argo
+# CD calls are printed rather than run. The environment gate, the runner pool
+# routing and the image being rolled out are all real.
+on:
+  workflow_call:
+    inputs:
+      service:
+        required: true
+        type: string
+      environment:
+        required: true
+        type: string
+      image:
+        required: true
+        type: string
+
+  # Production promotion, and re-rolling an image that already exists. Takes
+  # an image and ships it, never builds one.
+  workflow_dispatch:
+    inputs:
+      service:
+        description: Service to deploy
+        type: string
+        default: k8s-cicd
+        required: true
+      environment:
+        description: Target environment
+        type: choice
+        options:
+          - dev0
+          - dev1
+          - dev2
+          - dev3
+          - staging
+          - production
+        required: true
+      image:
+        description: "Image to roll out, e.g. ghcr.io/sk-platform/k8s-cicd:v1.0.0"
+        type: string
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  sync:
+    name: ${{ inputs.service }} to ${{ inputs.environment }}
+    runs-on: ubuntu-latest
+    # Production has a required reviewer on its GitHub environment, so the job
+    # waits here for approval. Dev and staging have no protection rules.
+    environment:
+      name: ${{ inputs.environment }}
+    steps:
+      - name: Work out the target
+        id: target
+        env:
+          SERVICE: ${{ inputs.service }}
+          ENVIRONMENT: ${{ inputs.environment }}
+          IMAGE: ${{ inputs.image }}
+        run: |
+          set -euo pipefail
+
+          # Only prod runners can reach the production control plane.
+          if [ "$ENVIRONMENT" = "production" ]; then
+            pool=prod
+          else
+            pool=nonprod
+          fi
+
+          app="$SERVICE-$ENVIRONMENT"
+
+          {
+            echo "app=$app"
+            echo "pool=$pool"
+          } >> "$GITHUB_OUTPUT"
+
+          echo "::notice title=Target::$app gets $IMAGE on the $pool pool"
+
+          echo "::group::Target"
+          echo "service     $SERVICE"
+          echo "environment $ENVIRONMENT"
+          echo "argocd app  $app"
+          echo "runner pool $pool"
+          echo "image       $IMAGE"
+          echo "::endgroup::"
+
+          if [ "$ENVIRONMENT" = "production" ]; then
+            echo "::warning title=Production::Approved, rolling out to production"
+          fi
+
+      - name: Sync the Argo CD app
+        env:
+          APP: ${{ steps.target.outputs.app }}
+          IMAGE: ${{ inputs.image }}
+          ENVIRONMENT: ${{ inputs.environment }}
+        run: |
+          set -euo pipefail
+
+          # Masked so it stays out of the log even if something echoes it.
+          token="demo-not-a-real-credential"
+          echo "::add-mask::$token"
+
+          # Each environment keeps its server in its own variable, such as
+          # ARGOCD_SERVER_STAGING. tr rather than ${x^^} so this runs on any
+          # bash, not just 4 and up.
+          server_var="ARGOCD_SERVER_$(echo "$ENVIRONMENT" | tr '[:lower:]-' '[:upper:]_')"
+
+          echo "::group::argocd login (printed, not run)"
+          echo "argocd login \"\$$server_var\" --grpc-web --username \"\$ARGOCD_USER\" --password \"\$ARGOCD_PASSWORD\""
+          echo "::endgroup::"
+
+          echo "::group::argocd sync (printed, not run)"
+          echo "argocd app set $APP -p image.tag=${IMAGE##*:}"
+          echo "argocd app sync $APP --timeout 300"
+          echo "argocd app wait $APP --health --timeout 300"
+          echo "::endgroup::"
+
+          echo "::notice title=Done::$APP is healthy on $IMAGE"
+
+      - name: Summarise
+        if: always()
+        env:
+          SERVICE: ${{ inputs.service }}
+          ENVIRONMENT: ${{ inputs.environment }}
+          IMAGE: ${{ inputs.image }}
+          APP: ${{ steps.target.outputs.app }}
+          POOL: ${{ steps.target.outputs.pool }}
+          RESULT: ${{ job.status }}
+        run: |
+          {
+            echo "## Deployed \`$SERVICE\` to \`$ENVIRONMENT\`"
+            echo
+            echo "| | |"
+            echo "| --- | --- |"
+            echo "| Image | \`$IMAGE\` |"
+            echo "| Argo CD app | \`${APP:-unresolved}\` |"
+            echo "| Runner pool | \`${POOL:-unresolved}\` |"
+            echo "| Result | \`$RESULT\` |"
+            echo
+            echo "Demo repo, so the Argo CD calls are printed rather than run."
+          } >> "$GITHUB_STEP_SUMMARY"

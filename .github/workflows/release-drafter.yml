@@ -1,0 +1,58 @@
+name: Release drafter
+
+# Merging to main does not deploy. It just keeps a draft release in step with
+# what has landed, so the next version is one click away.
+#
+# Publishing the draft is what creates the tag and starts a deployment.
+on:
+  push:
+    branches: [main]
+
+concurrency:
+  group: release-drafter
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  draft:
+    name: update the draft
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # create and amend the draft release
+      pull-requests: read # read the labels that decide the version
+    steps:
+      - name: Draft the next release
+        id: drafter
+        uses: release-drafter/release-drafter@v6
+        with:
+          config-name: release-drafter.yml
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Report
+        env:
+          NAME: ${{ steps.drafter.outputs.name }}
+          TAG: ${{ steps.drafter.outputs.tag_name }}
+          URL: ${{ steps.drafter.outputs.html_url }}
+        run: |
+          echo "::notice title=Draft ready::$NAME, publish it to ship to staging"
+
+          echo "::group::Draft"
+          echo "name $NAME"
+          echo "tag  $TAG"
+          echo "url  $URL"
+          echo "::endgroup::"
+
+          {
+            echo "## Draft updated"
+            echo
+            echo "| | |"
+            echo "| --- | --- |"
+            echo "| Name | \`$NAME\` |"
+            echo "| Tag on publish | \`$TAG\` |"
+            echo "| Draft | [open]($URL) |"
+            echo
+            echo "Publishing builds \`ghcr.io/${GITHUB_REPOSITORY}:$TAG\` and deploys it to staging."
+          } >> "$GITHUB_STEP_SUMMARY"

@@ -1,0 +1,108 @@
+name: Merge preview
+
+# The pull request gate.
+#
+# GitHub computes refs/pull/N/merge when the PR is opened or pushed to, so it
+# goes stale as soon as the base moves. This merges the base as it stands now
+# and runs the suite on the result, which is what catches a merge that breaks
+# tests neither side broke on its own.
+#
+# The merge is never committed and nothing is pushed. The merged tree only
+# exists in this runner's working directory.
+on:
+  pull_request:
+
+concurrency:
+  group: merge-preview-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  merge-preview:
+    name: merge preview against the current base
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+
+      - name: Merge ${{ github.base_ref }} into the working tree
+        id: merge
+        env:
+          BASE: ${{ github.base_ref }}
+        run: |
+          git fetch --no-tags origin "$BASE"
+          base_sha=$(git rev-parse "origin/$BASE")
+          echo "base_sha=$base_sha" >> "$GITHUB_OUTPUT"
+
+          # A real merge needs a committer even under --no-commit, because git
+          # prepares the commit it then does not make. The runner has no
+          # identity of its own.
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          echo "::group::Merging origin/$BASE ($base_sha)"
+          # --no-commit stages the result without committing it. Nothing is
+          # pushed either: the job has contents:read and no push step.
+          if ! git merge --no-commit --no-ff "origin/$BASE"; then
+            # Calling every failure a conflict sends people off to rebase a
+            # branch that merges fine, so check for unmerged paths first.
+            if git ls-files --unmerged | grep -q .; then
+              detail="This PR conflicts with $BASE. Merge the base branch locally, resolve it, and push again."
+            else
+              detail="git could not merge $BASE into this PR, and it is not a conflict. See the log above."
+            fi
+            git merge --abort 2>/dev/null || true
+            echo "::endgroup::"
+            echo "::error title=Merge failed::$detail"
+            exit 1
+          fi
+          echo "merged, uncommitted. HEAD is still $(git rev-parse --short HEAD)"
+          echo "::endgroup::"
+
+          echo "::notice title=Merge preview::Testing this PR merged with $BASE at $base_sha"
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      - run: npm ci
+
+      - name: Verify the merged tree
+        id: verify
+        run: npm run verify
+
+      - name: Build the merged tree
+        id: build
+        run: npm run build
+
+      - name: Summarise
+        if: always()
+        env:
+          BASE: ${{ github.base_ref }}
+          BASE_SHA: ${{ steps.merge.outputs.base_sha }}
+          VERIFY: ${{ steps.verify.outcome }}
+          BUILD: ${{ steps.build.outcome }}
+          RESULT: ${{ job.status }}
+        run: |
+          mark() { case "${1:-skipped}" in success) echo "pass";; failure) echo "FAIL";; *) echo "skipped";; esac; }
+
+          {
+            echo "## Merge preview against \`$BASE\`"
+            echo
+            echo "| Check | Result |"
+            echo "| --- | --- |"
+            echo "| Merge | $([ -n "${BASE_SHA:-}" ] && echo "clean at \`${BASE_SHA:0:7}\`" || echo "conflict") |"
+            echo "| Verify | $(mark "$VERIFY") |"
+            echo "| Build | $(mark "$BUILD") |"
+            echo
+            echo "Tests the merge result rather than the branch."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          if [ "$RESULT" != "success" ]; then
+            echo "::error title=Merge preview failed::This PR does not pass once merged with $BASE"
+          fi

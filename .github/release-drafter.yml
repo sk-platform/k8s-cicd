@@ -1,0 +1,33 @@
+# Version comes from the labels on the PRs merged since the last release, so
+# keeping main merged is enough to keep the draft current.
+name-template: "v$RESOLVED_VERSION"
+tag-template: "v$RESOLVED_VERSION"
+
+version-resolver:
+  minor:
+    labels: [feature]
+  patch:
+    labels: [fix, chore]
+  default: patch
+
+categories:
+  - title: Features
+    labels: [feature]
+  - title: Fixes
+    labels: [fix]
+  - title: Maintenance
+    labels: [chore]
+
+change-template: "- $TITLE (#$NUMBER) @$AUTHOR"
+no-changes-template: "- No user-facing changes"
+
+template: |
+  ## What changed
+
+  $CHANGES
+
+  ---
+
+  Publishing this tags `v$RESOLVED_VERSION`, builds
+  `ghcr.io/$OWNER/$REPOSITORY:v$RESOLVED_VERSION` and deploys it to staging.
+  Production is a separate manual promotion of that same image.

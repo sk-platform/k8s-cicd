@@ -1,0 +1,104 @@
+name: CI
+
+# Runs on every push to any branch: the checks in `verify`, a production
+# build, and a CodeQL scan. The two jobs run in parallel so the scan does not
+# hold up the fast feedback.
+#
+# Testing the merge result is a separate job, in merge-preview.yml.
+on:
+  push:
+    branches: ["**"]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: lint, typecheck, test, build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      # Node runs the TypeScript tests directly, so there is no test runner
+      # to install.
+      - uses: actions/setup-node@v5
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      - run: npm ci
+
+      - name: Lint
+        id: lint
+        run: npm run lint
+
+      - name: Typecheck
+        id: typecheck
+        run: npm run typecheck
+
+      - name: Test
+        id: test
+        run: npm test
+
+      - name: Build
+        id: build
+        run: npm run build
+
+      # Separate steps above give a useful failure point in the UI. This turns
+      # them into one table so you do not have to expand anything.
+      - name: Summarise
+        if: always()
+        env:
+          LINT: ${{ steps.lint.outcome }}
+          TYPECHECK: ${{ steps.typecheck.outcome }}
+          TEST: ${{ steps.test.outcome }}
+          BUILD: ${{ steps.build.outcome }}
+          RESULT: ${{ job.status }}
+        run: |
+          mark() { case "${1:-skipped}" in success) echo "pass";; failure) echo "FAIL";; *) echo "skipped";; esac; }
+
+          {
+            echo "## CI on \`$GITHUB_REF_NAME\`"
+            echo
+            echo "| Check | Result |"
+            echo "| --- | --- |"
+            echo "| Lint | $(mark "$LINT") |"
+            echo "| Typecheck | $(mark "$TYPECHECK") |"
+            echo "| Test | $(mark "$TEST") |"
+            echo "| Build | $(mark "$BUILD") |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          if [ "$RESULT" = "success" ]; then
+            echo "::notice title=CI green::$GITHUB_REF_NAME passed lint, typecheck, test and build"
+          else
+            echo "::error title=CI failed::$GITHUB_REF_NAME did not pass, see the failing step above"
+          fi
+
+  codeql:
+    name: codeql
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write # upload the SARIF results
+      actions: read
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Initialise CodeQL
+        uses: github/codeql-action/init@v4
+        with:
+          languages: javascript-typescript
+          # Nothing to compile for an interpreted language.
+          build-mode: none
+          # security-extended adds the lower severity and lower precision
+          # queries on top of the default suite.
+          queries: security-extended
+
+      - name: Analyse
+        uses: github/codeql-action/analyze@v4
+        with:
+          category: "/language:javascript-typescript"
