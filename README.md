@@ -19,9 +19,9 @@ to build and ship. The app is not the point.
 push any branch        ──►  ci.yml                 lint, typecheck, test, build, codeql
 open a pull request    ──►  merge-preview.yml      verify the PR merged with the current base
 merge to main          ──►  release-drafter.yml    draft release bumped, nothing deployed
-publish the draft      ──►  release-deploy.yml     build.yml (vX.Y.Z) ──► deploy.yml (staging)
+publish the draft      ──►  build-and-deploy.yml   vX.Y.Z ──► build.yml ──► deploy.yml (staging)
+pick a dev namespace   ──►  build-and-deploy.yml   sha ──► build.yml ──► deploy.yml (dev0..dev3)
 promote, by hand       ──►  deploy.yml             that same image ──► production, behind approval
-pick a dev namespace   ──►  build-and-deploy.yml   tag ──► build.yml ──► deploy.yml (dev0..dev3)
 ```
 
 Two things in that picture matter more than the rest.
@@ -30,7 +30,7 @@ Two things in that picture matter more than the rest.
 with what has landed. Publishing the draft is a person deciding to ship, and
 that is the event which creates the tag.
 
-**Production does not build.** It promotes. `release-deploy.yml` builds one
+**Production does not build.** It promotes. Publishing a release builds one
 image from the release tag, staging runs it, and promoting to production hands
 `deploy.yml` that same tag. The bytes that ship are the bytes that were tested.
 
@@ -41,15 +41,11 @@ image from the release tag, staging runs it, and promoting to production hands
 | `ci.yml` | push to any branch | lint, typecheck, test, build, CodeQL |
 | `merge-preview.yml` | pull request | verifies the PR merged with the current base |
 | `release-drafter.yml` | push to `main` | updates the draft release |
-| `release-deploy.yml` | release published | calls `build.yml`, then deploys to staging |
-| `build-and-deploy.yml` | manual | picks a tag, then calls `build.yml` and `deploy.yml` |
+| `build-and-deploy.yml` | release published, or manual | works out the tag, then calls `build.yml` and `deploy.yml` |
 | `build.yml` | called, or manual | builds and pushes the image for a given tag |
 | `deploy.yml` | called, or manual | the rollout itself, for every environment |
 
-The last two are the only places an image gets built or a rollout happens, and
-everything else is a caller. That split is the point: one build path and one
-deploy path to read and change, instead of a copy per trigger that quietly
-drifts.
+Three workflows, each with one job to do.
 
 `build.yml` takes a tag and pushes `ghcr.io/<repo>:<tag>`. It does not care
 where the tag came from, so a release and a dev deploy produce their images
@@ -60,8 +56,19 @@ CD app name (`{service}-{environment}`), works out which runner pool the
 environment needs, and runs inside the matching GitHub Environment so
 approvals apply.
 
-`build-and-deploy.yml` is what decides a tag. Give it a version and it uses
-that; leave the version blank and it uses the short commit SHA.
+`build-and-deploy.yml` is the only caller of either, and both ways in go
+through it, because a release and a dev deploy want the same three steps and
+only disagree about what the tag is and where it lands:
+
+| Trigger | Tag | Built from | Lands on |
+| --- | --- | --- | --- |
+| release published | the release tag, plus `latest` | that tag | `staging` |
+| manual, version given | that version | the branch you ran it from | the dev namespace you picked |
+| manual, no version | the short commit SHA | the branch you ran it from | the dev namespace you picked |
+
+Production is deliberately not in that table. It promotes an image this
+workflow already built and staging already ran, so it dispatches `deploy.yml`
+on its own with no build step at all.
 
 ```bash
 # promote to production, no rebuild
@@ -98,9 +105,9 @@ first push and starts out private.
 
 | Triggered by | Tag |
 | --- | --- |
-| `build-and-deploy.yml`, no version given | the short commit SHA |
-| `build-and-deploy.yml`, version given | that version |
 | a published release | the release tag, plus `latest` |
+| a dispatch with a version | that version |
+| a dispatch without one | the short commit SHA |
 
 Dev tags are disposable, because dev images are rebuilt constantly and are
 never promoted. Release tags are permanent and match the git tag, which is what
@@ -160,7 +167,7 @@ git commit -am "try something"
 git push -u origin try/something     # ci.yml runs
 gh pr create                         # merge-preview.yml runs
 gh pr merge --merge                  # release-drafter.yml updates the draft
-gh release edit v1.0.1 --draft=false # release-deploy.yml builds and ships to staging
+gh release edit v1.0.1 --draft=false # builds the tag, ships it to staging
 ```
 
 Then promote the image it built with the `gh workflow run deploy.yml` command
